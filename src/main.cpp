@@ -26,10 +26,11 @@ struct CVector { float x, y, z; };
 
 // ==================== CONFIG ====================
 struct Config {
-    bool  aimbot = true;
-    float smooth = 16.0f;
-    float fov = 15.0f;
-    float max_dist = 50.0f;
+    bool  aimbot = false;
+    bool  visible_only = true;
+    float smooth = 20.0f;
+    float fov = 10.0f;
+    float max_dist = 40.0f;
     int   bone = 1;
 
     bool  no_recoil = true;
@@ -57,7 +58,9 @@ static int GetLocalID() {
     __try {
         uintptr_t info = *(uintptr_t*)SAMP_INFO;
         if (!info) return -1;
-        return *(int*)(info + 0x08);
+        int id = *(int*)(info + 0x08);
+        if (id < 0 || id > 999) return -1;
+        return id;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
 
@@ -93,13 +96,15 @@ static CVector GetRemotePos(int id) {
         if (!pool) return {0,0,0};
         uintptr_t info = *(uintptr_t*)(pool + 4 + (id * 4));
         if (!info) return {0,0,0};
-        uintptr_t offsets[] = { 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x38 };
-        for (int i = 0; i < 7; i++) {
+
+        uintptr_t offsets[] = { 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x38, 0x3C };
+        for (int i = 0; i < 8; i++) {
             uintptr_t ped = *(uintptr_t*)(info + offsets[i]);
             if (ped < 0x10000 || ped > 0xF0000000) continue;
             CVector v = *(CVector*)(ped + 0x14);
             if (isnan(v.x) || isnan(v.y) || isnan(v.z)) continue;
             if (fabsf(v.x) > 10000.0f || fabsf(v.y) > 10000.0f) continue;
+            if (fabsf(v.z) > 1000.0f) continue;
             return v;
         }
         return {0,0,0};
@@ -129,6 +134,17 @@ static bool IsInFOV(CVector local, CVector target, float fov) {
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+// ==================== LINE OF SIGHT ====================
+typedef bool(__cdecl* LineOfSight_t)(CVector*, CVector*, bool, bool, bool, bool, bool);
+#define GTA_LINE_OF_SIGHT 0x56A490
+
+static bool IsVisible(CVector from, CVector to) {
+    __try {
+        LineOfSight_t fn = (LineOfSight_t)GTA_LINE_OF_SIGHT;
+        return fn(&from, &to, true, false, false, true, true);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return true; }
+}
+
 // ==================== AIMBOT ====================
 static int FindBestTarget() {
     if (g_LocalID < 0) return -1;
@@ -148,13 +164,18 @@ static int FindBestTarget() {
         if (d >= bestDist) continue;
         if (!IsInFOV(local, t, g_Cfg.fov)) continue;
 
+        if (g_Cfg.visible_only) {
+            CVector chest = { t.x, t.y, t.z + 0.4f };
+            if (!IsVisible(local, chest)) continue;
+        }
+
         bestDist = d;
         best = i;
     }
     return best;
 }
 
-static void AimAtTarget(float smoothValue) {
+static void AimAtTarget() {
     if (g_TargetID < 0) return;
 
     CVector local = GetLocalPos();
@@ -174,7 +195,8 @@ static void AimAtTarget(float smoothValue) {
     float targetX = atan2f(dy, dx) * 57.2958f;
     float targetZ = atan2f(dz, dist) * -57.2958f;
 
-    if (smoothValue < 1.0f) smoothValue = 1.0f;
+    float smoothValue = g_Cfg.smooth;
+    if (smoothValue < 2.0f) smoothValue = 2.0f;
 
     __try {
         float* camX = (float*)GTA_CAMERA_X;
@@ -193,23 +215,19 @@ static void ApplyAimbot() {
     if (!g_Cfg.aimbot) return;
     if (g_LocalID < 0) return;
 
-    bool rmb = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
-
-    if (!rmb && !alt) return;
-
     g_TargetID = FindBestTarget();
     if (g_TargetID < 0) return;
 
-    if (alt) AimAtTarget(1.0f);
-    else     AimAtTarget(g_Cfg.smooth);
+    AimAtTarget();
 }
 
 // ==================== MEMORY ====================
 static void ApplyMemory() {
-    if (g_Cfg.no_recoil) *(float*)GTA_RECOIL = 0.0f;
-    if (g_Cfg.no_spread) *(float*)GTA_SPREAD = 0.0f;
-    if (g_Cfg.no_flash)  *(float*)GTA_FLASH  = 0.0f;
+    __try {
+        if (g_Cfg.no_recoil) *(float*)GTA_RECOIL = 0.0f;
+        if (g_Cfg.no_spread) *(float*)GTA_SPREAD = 0.0f;
+        if (g_Cfg.no_flash)  *(float*)GTA_FLASH  = 0.0f;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {}
 }
 
 // ==================== THEME ====================
@@ -253,7 +271,6 @@ static LRESULT WINAPI hkWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
     if (g_Init) {
         ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
 
-        // فقط موس رو بلاک کن وقتی روی پنله — کیبورد کار خودش رو بکنه
         if (g_Cfg.show_menu && ImGui::GetIO().WantCaptureMouse) {
             switch (msg) {
                 case WM_LBUTTONDOWN: case WM_LBUTTONUP:
@@ -272,7 +289,7 @@ static LRESULT WINAPI hkWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 static void DrawMenu() {
     if (!g_Cfg.show_menu) return;
 
-    ImGui::SetNextWindowSize(ImVec2(480, 440), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(480, 460), ImGuiCond_FirstUseEver);
     ImGui::Begin("MNZ Panel v2.0", &g_Cfg.show_menu, ImGuiWindowFlags_NoCollapse);
 
     ImGui::TextColored(ImVec4(0.7f, 0.5f, 1.0f, 1.0f), "MNZ Panel v2.0");
@@ -284,29 +301,48 @@ static void DrawMenu() {
 
         if (ImGui::BeginTabItem("Aimbot")) {
             ImGui::Spacing();
-            ImGui::Checkbox("Enable Aimbot", &g_Cfg.aimbot);
-            ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "RMB = smooth | ALT = fast");
+
+            if (g_Cfg.aimbot) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.15f, 0.55f, 0.20f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.20f, 0.65f, 0.25f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.10f, 0.45f, 0.15f, 1.0f));
+                if (ImGui::Button("AIMBOT: ON", ImVec2(220, 42))) g_Cfg.aimbot = false;
+                ImGui::PopStyleColor(3);
+            } else {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.40f, 0.15f, 0.15f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.55f, 0.20f, 0.20f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.10f, 0.10f, 1.0f));
+                if (ImGui::Button("AIMBOT: OFF", ImVec2(220, 42))) g_Cfg.aimbot = true;
+                ImGui::PopStyleColor(3);
+            }
+
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-            ImGui::Text("Smooth");
+
+            ImGui::Checkbox("Visible Only (anti-wallshot)", &g_Cfg.visible_only);
+
+            ImGui::Spacing();
+            ImGui::Text("Smooth (higher = smoother/legit)");
             ImGui::SliderFloat("##smooth", &g_Cfg.smooth, 2.0f, 25.0f, "%.1f");
             ImGui::Text("FOV");
             ImGui::SliderFloat("##fov", &g_Cfg.fov, 5.0f, 90.0f, "%.0f");
             ImGui::Text("Max Distance");
             ImGui::SliderFloat("##maxdist", &g_Cfg.max_dist, 10.0f, 200.0f, "%.0f m");
+
             const char* bones[] = { "Head", "Chest", "Pelvis" };
             ImGui::Text("Target Bone");
             ImGui::Combo("##bone", &g_Cfg.bone, bones, 3);
+
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-            if (ImGui::Button("Apply War Preset", ImVec2(200, 32))) {
+            if (ImGui::Button("Apply War Preset", ImVec2(220, 32))) {
                 g_Cfg.aimbot = true;
-                g_Cfg.smooth = 16.0f;
-                g_Cfg.fov = 15.0f;
-                g_Cfg.max_dist = 50.0f;
+                g_Cfg.visible_only = true;
+                g_Cfg.smooth = 20.0f;
+                g_Cfg.fov = 10.0f;
+                g_Cfg.max_dist = 40.0f;
                 g_Cfg.bone = 1;
                 g_Cfg.no_recoil = true;
                 g_Cfg.no_spread = true;
@@ -330,8 +366,7 @@ static void DrawMenu() {
             ImGui::Separator();
             ImGui::Spacing();
             ImGui::Text("F9      - Toggle menu");
-            ImGui::Text("RMB     - Smooth aimbot");
-            ImGui::Text("ALT     - Fast/silent aimbot");
+            ImGui::Text("Aimbot  - Toggle ON/OFF in Aimbot tab");
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
@@ -361,14 +396,12 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        // NavEnableKeyboard حذف شد تا کیبورد رو ندزده
 
         ImGui_ImplWin32_Init(g_hWnd);
         ImGui_ImplDX9_Init(pDevice);
 
         ApplyTheme();
 
-        // WndProc hook — بعد از ImGui init
         oWndProc = (WNDPROC)SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)hkWndProc);
 
         g_Init = true;

@@ -134,7 +134,6 @@ static bool IsInFOV(CVector local, CVector target, float fov) {
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-// ==================== LINE OF SIGHT ====================
 typedef bool(__cdecl* LineOfSight_t)(CVector*, CVector*, bool, bool, bool, bool, bool);
 #define GTA_LINE_OF_SIGHT 0x56A490
 
@@ -221,7 +220,6 @@ static void ApplyAimbot() {
     AimAtTarget();
 }
 
-// ==================== MEMORY ====================
 static void ApplyMemory() {
     __try {
         if (g_Cfg.no_recoil) *(float*)GTA_RECOIL = 0.0f;
@@ -386,10 +384,8 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
-
         io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
-        io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
 
@@ -408,27 +404,46 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
     g_F9Pressed = f9;
 
     g_LocalID = GetLocalID();
-
-    // فقط اگر منو بازه ImGui رندر کن — که وقتی بسته‌ست، D3D state اصلاً دست نخوره
-    if (g_Cfg.show_menu) {
-        ImGui_ImplDX9_NewFrame();
-        ImGui_ImplWin32_NewFrame();
-
-        ImGui::GetIO().WantCaptureKeyboard = false;
-        ImGui::GetIO().WantCaptureMouse = ImGui::GetIO().WantCaptureMouse;
-
-        ImGui::NewFrame();
-
-        DrawMenu();
-
-        ImGui::EndFrame();
-        ImGui::Render();
-        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-    }
-
-    // cheats جدا از ImGui رندر
     if (g_LocalID >= 0 && g_Cfg.aimbot) ApplyAimbot();
     if (g_Cfg.no_recoil || g_Cfg.no_spread || g_Cfg.no_flash) ApplyMemory();
+
+    // ====== SAVE STATE ======
+    IDirect3DVertexShader9* pOldVS = nullptr;
+    IDirect3DPixelShader9*  pOldPS = nullptr;
+    IDirect3DVertexDeclaration9* pOldDecl = nullptr;
+    pDevice->GetVertexShader(&pOldVS);
+    pDevice->GetPixelShader(&pOldPS);
+    pDevice->GetVertexDeclaration(&pOldDecl);
+
+    D3DMATRIX mWorld, mView, mProj;
+    pDevice->GetTransform(D3DTS_WORLD, &mWorld);
+    pDevice->GetTransform(D3DTS_VIEW, &mView);
+    pDevice->GetTransform(D3DTS_PROJECTION, &mProj);
+
+    IDirect3DSurface9* pOldRT = nullptr;
+    pDevice->GetRenderTarget(0, &pOldRT);
+
+    // ====== RENDER IMGUI ======
+    ImGui_ImplDX9_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    DrawMenu();
+
+    ImGui::EndFrame();
+    ImGui::Render();
+    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+
+    // ====== RESTORE STATE ======
+    if (pOldRT) { pDevice->SetRenderTarget(0, pOldRT); pOldRT->Release(); }
+
+    pDevice->SetTransform(D3DTS_WORLD, &mWorld);
+    pDevice->SetTransform(D3DTS_VIEW, &mView);
+    pDevice->SetTransform(D3DTS_PROJECTION, &mProj);
+
+    if (pOldDecl) { pDevice->SetVertexDeclaration(pOldDecl); pOldDecl->Release(); }
+    if (pOldVS)   { pDevice->SetVertexShader(pOldVS);        pOldVS->Release();   }
+    if (pOldPS)   { pDevice->SetPixelShader(pOldPS);         pOldPS->Release();   }
 
     return oEndScene(pDevice);
 }

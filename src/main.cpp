@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <windows.h>
 #include <d3d9.h>
 #include <cmath>

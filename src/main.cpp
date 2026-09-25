@@ -10,8 +10,6 @@
 
 #pragma comment(lib, "d3d9.lib")
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
-
 // ==================== LOG ====================
 static FILE* g_Log = nullptr;
 
@@ -48,10 +46,10 @@ struct CVector { float x, y, z; };
 // ==================== GLOBALS ====================
 HMODULE  g_hModule = nullptr;
 HWND     g_hWnd = nullptr;
-WNDPROC  oWndProc = nullptr;
 bool     g_Init = false;
 bool     g_ShowMenu = true;
 bool     g_EndSceneLogged = false;
+bool     g_FirstDrawLogged = false;
 int      g_ScreenW = 0, g_ScreenH = 0;
 int      g_LocalID = -1;
 
@@ -76,8 +74,8 @@ static void DrawMenu() {
     if (!g_ShowMenu) return;
 
     ImGui::SetNextWindowSize(ImVec2(420, 460), ImGuiCond_FirstUseEver);
-    ImGui::Begin("MNZ Panel v1.0", &g_ShowMenu);
-    ImGui::TextColored(ImVec4(0,1,0,1), "F7 = toggle menu");
+    ImGui::Begin("MNZ Panel v1.0");
+    ImGui::TextColored(ImVec4(0,1,0,1), "INSERT = toggle menu");
     ImGui::Separator();
 
     if (ImGui::BeginTabBar("##tabs")) {
@@ -103,9 +101,8 @@ static void DrawMenu() {
 
         if (ImGui::BeginTabItem("Info")) {
             ImGui::Text("MNZ Panel v1.0");
-            ImGui::Text("F7 = menu");
-            ImGui::Text("RMB = aim");
-            ImGui::Text("ALT = silent");
+            ImGui::Text("INSERT = toggle");
+            ImGui::Text("Made for baby");
             ImGui::EndTabItem();
         }
 
@@ -113,17 +110,6 @@ static void DrawMenu() {
     }
 
     ImGui::End();
-}
-
-// ==================== WNDPROC ====================
-static LRESULT WINAPI hkWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_KEYDOWN && wParam == VK_F7) {
-        g_ShowMenu = !g_ShowMenu;
-    }
-    if (g_ShowMenu) {
-        ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-    }
-    return CallWindowProc(oWndProc, hWnd, msg, wParam, lParam);
 }
 
 // ==================== ENDSCENE ====================
@@ -134,7 +120,7 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
     }
 
     if (!g_Init) {
-        Log("Init: getting params");
+        Log("Init: start");
         D3DDEVICE_CREATION_PARAMETERS params;
         pDevice->GetCreationParameters(&params);
         g_hWnd = params.hFocusWindow;
@@ -144,23 +130,20 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
         g_ScreenW = vp.Width;
         g_ScreenH = vp.Height;
 
-        Log("Init: creating ImGui context");
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.IniFilename = nullptr;
 
-        Log("Init: ImGui_ImplWin32_Init");
         ImGui_ImplWin32_Init(g_hWnd);
-
-        Log("Init: ImGui_ImplDX9_Init");
         ImGui_ImplDX9_Init(pDevice);
-
-        Log("Init: setting wndproc");
-        oWndProc = (WNDPROC)SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)hkWndProc);
 
         g_Init = true;
         Log("Init: done");
+    }
+
+    if (GetAsyncKeyState(VK_INSERT) & 1) {
+        g_ShowMenu = !g_ShowMenu;
     }
 
     ImGui_ImplDX9_NewFrame();
@@ -170,7 +153,10 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
     DrawMenu();
     ApplyMemory();
 
-    g_LocalID = GetLocalID();
+    if (!g_FirstDrawLogged) {
+        Log("First draw done");
+        g_FirstDrawLogged = true;
+    }
 
     ImGui::EndFrame();
     ImGui::Render();
@@ -191,11 +177,9 @@ static void InstallHooks() {
     }
 
     if (!pDevice) {
-        Log("InstallHooks: game D3D device not found");
+        Log("InstallHooks: device not found");
         return;
     }
-
-    Log("InstallHooks: got device, hooking vtable[42]");
 
     void** vtable = *(void***)pDevice;
     oEndScene = (EndScene_t)vtable[42];
@@ -215,7 +199,7 @@ static DWORD WINAPI MainThread(LPVOID) {
     while (!GetModuleHandleA("samp.dll")) Sleep(500);
     Log("MainThread: samp.dll found");
 
-    Sleep(2000);
+    Sleep(5000);
 
     InstallHooks();
     return 0;

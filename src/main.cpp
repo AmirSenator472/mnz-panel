@@ -270,17 +270,6 @@ static void ApplyTheme() {
 static LRESULT WINAPI hkWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (g_Init) {
         ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
-
-        if (g_Cfg.show_menu && ImGui::GetIO().WantCaptureMouse) {
-            switch (msg) {
-                case WM_LBUTTONDOWN: case WM_LBUTTONUP:
-                case WM_RBUTTONDOWN: case WM_RBUTTONUP:
-                case WM_MBUTTONDOWN: case WM_MBUTTONUP:
-                case WM_MOUSEWHEEL:
-                case WM_XBUTTONDOWN: case WM_XBUTTONUP:
-                    return TRUE;
-            }
-        }
     }
     return CallWindowProc(oWndProc, hWnd, msg, wParam, lParam);
 }
@@ -289,8 +278,14 @@ static LRESULT WINAPI hkWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 static void DrawMenu() {
     if (!g_Cfg.show_menu) return;
 
+    ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBringToFrontOnFocus |
+        ImGuiWindowFlags_NoNavFocus;
+
     ImGui::SetNextWindowSize(ImVec2(480, 460), ImGuiCond_FirstUseEver);
-    ImGui::Begin("MNZ Panel v2.0", &g_Cfg.show_menu, ImGuiWindowFlags_NoCollapse);
+    ImGui::Begin("MNZ Panel v2.0", &g_Cfg.show_menu, flags);
 
     ImGui::TextColored(ImVec4(0.7f, 0.5f, 1.0f, 1.0f), "MNZ Panel v2.0");
     ImGui::SameLine();
@@ -394,6 +389,9 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
+
+        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
 
@@ -413,8 +411,16 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
     g_LocalID = GetLocalID();
 
+    // SAVE D3D STATE
+    IDirect3DStateBlock9* pStateBlock = nullptr;
+    pDevice->CreateStateBlock(D3DSBT_ALL, &pStateBlock);
+    if (pStateBlock) pStateBlock->Capture();
+
     ImGui_ImplDX9_NewFrame();
     ImGui_ImplWin32_NewFrame();
+
+    ImGui::GetIO().WantCaptureKeyboard = false;
+
     ImGui::NewFrame();
 
     if (g_LocalID >= 0) ApplyAimbot();
@@ -425,6 +431,12 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
     ImGui::EndFrame();
     ImGui::Render();
     ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+
+    // RESTORE D3D STATE
+    if (pStateBlock) {
+        pStateBlock->Apply();
+        pStateBlock->Release();
+    }
 
     return oEndScene(pDevice);
 }

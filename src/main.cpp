@@ -33,8 +33,8 @@ struct Config {
     float max_dist = 40.0f;
     int   bone = 1;
 
-    bool  no_recoil = true;
-    bool  no_spread = true;
+    bool  no_recoil = false;
+    bool  no_spread = false;
     bool  no_flash = false;
 
     bool  show_menu = true;
@@ -339,9 +339,6 @@ static void DrawMenu() {
                 g_Cfg.fov = 10.0f;
                 g_Cfg.max_dist = 40.0f;
                 g_Cfg.bone = 1;
-                g_Cfg.no_recoil = true;
-                g_Cfg.no_spread = true;
-                g_Cfg.no_flash = false;
             }
             ImGui::EndTabItem();
         }
@@ -392,6 +389,7 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
         io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
         io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+        io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
 
@@ -411,32 +409,26 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
     g_LocalID = GetLocalID();
 
-    // SAVE D3D STATE
-    IDirect3DStateBlock9* pStateBlock = nullptr;
-    pDevice->CreateStateBlock(D3DSBT_ALL, &pStateBlock);
-    if (pStateBlock) pStateBlock->Capture();
+    // فقط اگر منو بازه ImGui رندر کن — که وقتی بسته‌ست، D3D state اصلاً دست نخوره
+    if (g_Cfg.show_menu) {
+        ImGui_ImplDX9_NewFrame();
+        ImGui_ImplWin32_NewFrame();
 
-    ImGui_ImplDX9_NewFrame();
-    ImGui_ImplWin32_NewFrame();
+        ImGui::GetIO().WantCaptureKeyboard = false;
+        ImGui::GetIO().WantCaptureMouse = ImGui::GetIO().WantCaptureMouse;
 
-    ImGui::GetIO().WantCaptureKeyboard = false;
+        ImGui::NewFrame();
 
-    ImGui::NewFrame();
+        DrawMenu();
 
-    if (g_LocalID >= 0) ApplyAimbot();
-
-    DrawMenu();
-    ApplyMemory();
-
-    ImGui::EndFrame();
-    ImGui::Render();
-    ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
-
-    // RESTORE D3D STATE
-    if (pStateBlock) {
-        pStateBlock->Apply();
-        pStateBlock->Release();
+        ImGui::EndFrame();
+        ImGui::Render();
+        ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
     }
+
+    // cheats جدا از ImGui رندر
+    if (g_LocalID >= 0 && g_Cfg.aimbot) ApplyAimbot();
+    if (g_Cfg.no_recoil || g_Cfg.no_spread || g_Cfg.no_flash) ApplyMemory();
 
     return oEndScene(pDevice);
 }

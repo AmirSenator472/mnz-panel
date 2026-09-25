@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <d3d9.h>
 #include <cmath>
+#include <cstdio>
 
 #include "imgui.h"
 #include "imgui_impl_dx9.h"
@@ -10,6 +11,14 @@
 #pragma comment(lib, "d3d9.lib")
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+
+// ==================== LOG ====================
+static FILE* g_Log = nullptr;
+
+static void Log(const char* msg) {
+    if (!g_Log) g_Log = fopen("MNZPanel.log", "a");
+    if (g_Log) { fprintf(g_Log, "%s\n", msg); fflush(g_Log); }
+}
 
 // ==================== CONFIG ====================
 struct Config {
@@ -26,30 +35,14 @@ struct Config {
     bool  visible_only = true;
 } g_Cfg;
 
-// ==================== OFFSETS ====================
 #define SAMP_INFO          0x21A0F8
 #define SAMP_PLAYER_POOL   0x21A100
 #define GTA_PLAYER_PTR     0xB6F5F0
-#define GTA_CAMERA_X       0xB6F258
-#define GTA_CAMERA_Z       0xB6F248
 #define GTA_RECOIL         0x732E14
 #define GTA_SPREAD         0x732E18
 #define GTA_FLASH          0x732E1C
 
-// ==================== STRUCTS ====================
 struct CVector { float x, y, z; };
-
-struct stPlayerInfo {
-    uint32_t uiVehicleID;
-    uint32_t uiPlayerID;
-    uint32_t uiScore;
-    float    fHealth;
-    float    fArmour;
-    uint32_t uiWeapon;
-    uint32_t uiState;
-    uint32_t uiPing;
-    char     szName[24];
-};
 
 // ==================== GLOBALS ====================
 HMODULE  g_hModule = nullptr;
@@ -57,46 +50,20 @@ HWND     g_hWnd = nullptr;
 WNDPROC  oWndProc = nullptr;
 bool     g_Init = false;
 bool     g_ShowMenu = true;
+bool     g_EndSceneLogged = false;
 int      g_ScreenW = 0, g_ScreenH = 0;
 int      g_LocalID = -1;
-int      g_TargetID = -1;
 
 typedef HRESULT(WINAPI* EndScene_t)(IDirect3DDevice9*);
 EndScene_t oEndScene = nullptr;
 
 // ==================== HELPERS ====================
-static CVector GetLocalPos() {
-    uintptr_t p = *(uintptr_t*)GTA_PLAYER_PTR;
-    if (!p) return {0,0,0};
-    return *(CVector*)(p + 0x14);
-}
-
-static bool IsConnected(int id) {
-    uintptr_t pool = *(uintptr_t*)SAMP_PLAYER_POOL;
-    if (!pool) return false;
-    return *(uintptr_t*)(pool + 4 + (id * 4)) != 0;
-}
-
-static stPlayerInfo* GetPlayer(int id) {
-    uintptr_t pool = *(uintptr_t*)SAMP_PLAYER_POOL;
-    if (!pool) return nullptr;
-    uintptr_t p = *(uintptr_t*)(pool + 4 + (id * 4));
-    if (!p) return nullptr;
-    return (stPlayerInfo*)p;
-}
-
 static int GetLocalID() {
     uintptr_t info = *(uintptr_t*)SAMP_INFO;
     if (!info) return -1;
     return *(int*)(info + 0x08);
 }
 
-static float Dist3D(CVector a, CVector b) {
-    float dx = b.x-a.x, dy = b.y-a.y, dz = b.z-a.z;
-    return sqrtf(dx*dx+dy*dy+dz*dz);
-}
-
-// ==================== CHEATS ====================
 static void ApplyMemory() {
     if (g_Cfg.no_recoil) *(float*)GTA_RECOIL = 0.0f;
     if (g_Cfg.no_spread) *(float*)GTA_SPREAD = 0.0f;
@@ -109,7 +76,7 @@ static void DrawMenu() {
 
     ImGui::SetNextWindowSize(ImVec2(420, 460), ImGuiCond_FirstUseEver);
     ImGui::Begin("MNZ Panel v1.0", &g_ShowMenu);
-    ImGui::TextColored(ImVec4(0,1,0,1), "INSERT = toggle menu");
+    ImGui::TextColored(ImVec4(0,1,0,1), "F7 = toggle menu");
     ImGui::Separator();
 
     if (ImGui::BeginTabBar("##tabs")) {
@@ -133,18 +100,11 @@ static void DrawMenu() {
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem("ESP")) {
-            ImGui::Checkbox("Enable ESP", &g_Cfg.esp);
-            ImGui::EndTabItem();
-        }
-
         if (ImGui::BeginTabItem("Info")) {
             ImGui::Text("MNZ Panel v1.0");
             ImGui::Text("F7 = menu");
             ImGui::Text("RMB = aim");
-            ImGui::Text("ALT = silent aim");
-            ImGui::Separator();
-            ImGui::Text("Made for baby");
+            ImGui::Text("ALT = silent");
             ImGui::EndTabItem();
         }
 
@@ -167,7 +127,13 @@ static LRESULT WINAPI hkWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 // ==================== ENDSCENE ====================
 static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
+    if (!g_EndSceneLogged) {
+        Log("EndScene called");
+        g_EndSceneLogged = true;
+    }
+
     if (!g_Init) {
+        Log("Init: getting params");
         D3DDEVICE_CREATION_PARAMETERS params;
         pDevice->GetCreationParameters(&params);
         g_hWnd = params.hFocusWindow;
@@ -177,17 +143,23 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
         g_ScreenW = vp.Width;
         g_ScreenH = vp.Height;
 
+        Log("Init: creating ImGui context");
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.IniFilename = nullptr;
 
+        Log("Init: ImGui_ImplWin32_Init");
         ImGui_ImplWin32_Init(g_hWnd);
+
+        Log("Init: ImGui_ImplDX9_Init");
         ImGui_ImplDX9_Init(pDevice);
 
+        Log("Init: setting wndproc");
         oWndProc = (WNDPROC)SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)hkWndProc);
 
         g_Init = true;
+        Log("Init: done");
     }
 
     ImGui_ImplDX9_NewFrame();
@@ -195,11 +167,8 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
     ImGui::NewFrame();
 
     DrawMenu();
-
-    // Memory cheats
     ApplyMemory();
 
-    // Local ID
     g_LocalID = GetLocalID();
 
     ImGui::EndFrame();
@@ -211,8 +180,10 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
 // ==================== INSTALL ====================
 static void InstallHooks() {
+    Log("InstallHooks: start");
+
     IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!pD3D) return;
+    if (!pD3D) { Log("Direct3DCreate9 failed"); return; }
 
     D3DPRESENT_PARAMETERS d3dpp = {};
     d3dpp.Windowed = TRUE;
@@ -226,32 +197,45 @@ static void InstallHooks() {
         &d3dpp, &pDevice
     );
 
-    if (SUCCEEDED(hr) && pDevice) {
-        void** vtable = *(void***)pDevice;
-        oEndScene = (EndScene_t)vtable[42];
-
-        DWORD old;
-        VirtualProtect(&vtable[42], sizeof(void*), PAGE_EXECUTE_READWRITE, &old);
-        vtable[42] = (void*)hkEndScene;
-        VirtualProtect(&vtable[42], sizeof(void*), old, &old);
-
-        pDevice->Release();
+    if (FAILED(hr) || !pDevice) {
+        Log("CreateDevice failed");
+        pD3D->Release();
+        return;
     }
+
+    Log("InstallHooks: got device, hooking vtable[42]");
+
+    void** vtable = *(void***)pDevice;
+    oEndScene = (EndScene_t)vtable[42];
+
+    DWORD old;
+    VirtualProtect(&vtable[42], sizeof(void*), PAGE_EXECUTE_READWRITE, &old);
+    vtable[42] = (void*)hkEndScene;
+    VirtualProtect(&vtable[42], sizeof(void*), old, &old);
+
+    pDevice->Release();
     pD3D->Release();
+
+    Log("InstallHooks: done");
 }
 
 // ==================== MAIN ====================
 static DWORD WINAPI MainThread(LPVOID) {
+    Log("MainThread: started");
+
     while (!GetModuleHandleA("samp.dll")) Sleep(500);
+    Log("MainThread: samp.dll found");
+
     Sleep(2000);
+
     InstallHooks();
     return 0;
 }
 
 BOOL WINAPI DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     if (reason == DLL_PROCESS_ATTACH) {
-        g_hModule = hModule;
         DisableThreadLibraryCalls(hModule);
+        DeleteFileA("MNZPanel.log");
         CreateThread(nullptr, 0, MainThread, nullptr, 0, nullptr);
     }
     return TRUE;

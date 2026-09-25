@@ -9,6 +9,8 @@
 
 #pragma comment(lib, "d3d9.lib")
 
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+
 // ==================== OFFSETS ====================
 #define SAMP_INFO          0x21A0F8
 #define SAMP_PLAYER_POOL   0x21A100
@@ -25,10 +27,9 @@ struct CVector { float x, y, z; };
 // ==================== CONFIG ====================
 struct Config {
     bool  aimbot = true;
-    bool  silent = false;
-    float smooth = 14.0f;
-    float fov = 20.0f;
-    float max_dist = 60.0f;
+    float smooth = 16.0f;
+    float fov = 15.0f;
+    float max_dist = 50.0f;
     int   bone = 1;
 
     bool  no_recoil = true;
@@ -41,6 +42,7 @@ struct Config {
 // ==================== GLOBALS ====================
 HMODULE  g_hModule = nullptr;
 HWND     g_hWnd = nullptr;
+WNDPROC  oWndProc = nullptr;
 bool     g_Init = false;
 bool     g_F9Pressed = false;
 int      g_LocalID = -1;
@@ -63,12 +65,11 @@ static bool IsConnected(int id) {
     __try {
         uintptr_t pool = *(uintptr_t*)SAMP_PLAYER_POOL;
         if (!pool) return false;
-        uintptr_t p = *(uintptr_t*)(pool + 4 + (id * 4));
-        return p != 0;
+        return *(uintptr_t*)(pool + 4 + (id * 4)) != 0;
     } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
-static float GetPlayerHealth(int id) {
+static float GetHealth(int id) {
     __try {
         uintptr_t pool = *(uintptr_t*)SAMP_PLAYER_POOL;
         if (!pool) return 0.0f;
@@ -92,14 +93,13 @@ static CVector GetRemotePos(int id) {
         if (!pool) return {0,0,0};
         uintptr_t info = *(uintptr_t*)(pool + 4 + (id * 4));
         if (!info) return {0,0,0};
-
         uintptr_t offsets[] = { 0x40, 0x44, 0x48, 0x4C, 0x50, 0x54, 0x38 };
         for (int i = 0; i < 7; i++) {
             uintptr_t ped = *(uintptr_t*)(info + offsets[i]);
             if (ped < 0x10000 || ped > 0xF0000000) continue;
             CVector v = *(CVector*)(ped + 0x14);
             if (isnan(v.x) || isnan(v.y) || isnan(v.z)) continue;
-            if (fabsf(v.x) > 10000.0f || fabsf(v.y) > 10000.0f || fabsf(v.z) > 10000.0f) continue;
+            if (fabsf(v.x) > 10000.0f || fabsf(v.y) > 10000.0f) continue;
             return v;
         }
         return {0,0,0};
@@ -121,8 +121,8 @@ static bool IsInFOV(CVector local, CVector target, float fov) {
         float camX = *(float*)GTA_CAMERA_X;
         float dx = target.x - local.x;
         float dy = target.y - local.y;
-        float angleToTarget = atan2f(dy, dx) * 57.2958f;
-        float diff = angleToTarget - camX;
+        float ang = atan2f(dy, dx) * 57.2958f;
+        float diff = ang - camX;
         while (diff > 180.0f) diff -= 360.0f;
         while (diff < -180.0f) diff += 360.0f;
         return fabsf(diff) <= fov / 2.0f;
@@ -139,7 +139,7 @@ static int FindBestTarget() {
     for (int i = 0; i < 1000; i++) {
         if (i == g_LocalID) continue;
         if (!IsConnected(i)) continue;
-        if (GetPlayerHealth(i) <= 0.0f) continue;
+        if (GetHealth(i) <= 0.0f) continue;
 
         CVector t = GetRemotePos(i);
         if (t.x == 0 && t.y == 0 && t.z == 0) continue;
@@ -201,13 +201,8 @@ static void ApplyAimbot() {
     g_TargetID = FindBestTarget();
     if (g_TargetID < 0) return;
 
-    if (alt) {
-        // Silent/fast mode - instant snap
-        AimAtTarget(1.0f);
-    } else {
-        // Smooth mode
-        AimAtTarget(g_Cfg.smooth);
-    }
+    if (alt) AimAtTarget(1.0f);
+    else     AimAtTarget(g_Cfg.smooth);
 }
 
 // ==================== MEMORY ====================
@@ -253,11 +248,31 @@ static void ApplyTheme() {
     c[ImGuiCol_TextDisabled]     = ImVec4(0.50f, 0.50f, 0.55f, 1.00f);
 }
 
+// ==================== WNDPROC ====================
+static LRESULT WINAPI hkWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (g_Init) {
+        ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+
+        // فقط موس رو بلاک کن وقتی روی پنله — کیبورد کار خودش رو بکنه
+        if (g_Cfg.show_menu && ImGui::GetIO().WantCaptureMouse) {
+            switch (msg) {
+                case WM_LBUTTONDOWN: case WM_LBUTTONUP:
+                case WM_RBUTTONDOWN: case WM_RBUTTONUP:
+                case WM_MBUTTONDOWN: case WM_MBUTTONUP:
+                case WM_MOUSEWHEEL:
+                case WM_XBUTTONDOWN: case WM_XBUTTONUP:
+                    return TRUE;
+            }
+        }
+    }
+    return CallWindowProc(oWndProc, hWnd, msg, wParam, lParam);
+}
+
 // ==================== MENU ====================
 static void DrawMenu() {
     if (!g_Cfg.show_menu) return;
 
-    ImGui::SetNextWindowSize(ImVec2(480, 460), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(480, 440), ImGuiCond_FirstUseEver);
     ImGui::Begin("MNZ Panel v2.0", &g_Cfg.show_menu, ImGuiWindowFlags_NoCollapse);
 
     ImGui::TextColored(ImVec4(0.7f, 0.5f, 1.0f, 1.0f), "MNZ Panel v2.0");
@@ -271,12 +286,11 @@ static void DrawMenu() {
             ImGui::Spacing();
             ImGui::Checkbox("Enable Aimbot", &g_Cfg.aimbot);
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "RMB = smooth aim");
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "ALT = fast/silent aim");
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "RMB = smooth | ALT = fast");
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-            ImGui::Text("Smooth (higher = slower/legit)");
+            ImGui::Text("Smooth");
             ImGui::SliderFloat("##smooth", &g_Cfg.smooth, 2.0f, 25.0f, "%.1f");
             ImGui::Text("FOV");
             ImGui::SliderFloat("##fov", &g_Cfg.fov, 5.0f, 90.0f, "%.0f");
@@ -288,7 +302,6 @@ static void DrawMenu() {
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();
-            ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "War Preset (safe)");
             if (ImGui::Button("Apply War Preset", ImVec2(200, 32))) {
                 g_Cfg.aimbot = true;
                 g_Cfg.smooth = 16.0f;
@@ -346,14 +359,17 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
-        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
+        // NavEnableKeyboard حذف شد تا کیبورد رو ندزده
 
         ImGui_ImplWin32_Init(g_hWnd);
         ImGui_ImplDX9_Init(pDevice);
 
         ApplyTheme();
+
+        // WndProc hook — بعد از ImGui init
+        oWndProc = (WNDPROC)SetWindowLongPtr(g_hWnd, GWLP_WNDPROC, (LONG_PTR)hkWndProc);
 
         g_Init = true;
     }
@@ -368,9 +384,7 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    if (g_LocalID >= 0) {
-        ApplyAimbot();
-    }
+    if (g_LocalID >= 0) ApplyAimbot();
 
     DrawMenu();
     ApplyMemory();

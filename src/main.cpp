@@ -41,6 +41,7 @@ struct Config {
 #define GTA_RECOIL         0x732E14
 #define GTA_SPREAD         0x732E18
 #define GTA_FLASH          0x732E1C
+#define GTA_D3D_DEVICE     0xC97C28
 
 struct CVector { float x, y, z; };
 
@@ -180,26 +181,17 @@ static HRESULT WINAPI hkEndScene(IDirect3DDevice9* pDevice) {
 
 // ==================== INSTALL ====================
 static void InstallHooks() {
-    Log("InstallHooks: start");
-
-    IDirect3D9* pD3D = Direct3DCreate9(D3D_SDK_VERSION);
-    if (!pD3D) { Log("Direct3DCreate9 failed"); return; }
-
-    D3DPRESENT_PARAMETERS d3dpp = {};
-    d3dpp.Windowed = TRUE;
-    d3dpp.SwapEffect = D3DSWAPEFFECT_DISCARD;
-    d3dpp.hDeviceWindow = GetForegroundWindow();
+    Log("InstallHooks: waiting for game D3D device");
 
     IDirect3DDevice9* pDevice = nullptr;
-    HRESULT hr = pD3D->CreateDevice(
-        D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL,
-        d3dpp.hDeviceWindow, D3DCREATE_SOFTWARE_VERTEXPROCESSING,
-        &d3dpp, &pDevice
-    );
+    for (int i = 0; i < 120; i++) {
+        pDevice = *(IDirect3DDevice9**)GTA_D3D_DEVICE;
+        if (pDevice) break;
+        Sleep(500);
+    }
 
-    if (FAILED(hr) || !pDevice) {
-        Log("CreateDevice failed");
-        pD3D->Release();
+    if (!pDevice) {
+        Log("InstallHooks: game D3D device not found");
         return;
     }
 
@@ -212,9 +204,6 @@ static void InstallHooks() {
     VirtualProtect(&vtable[42], sizeof(void*), PAGE_EXECUTE_READWRITE, &old);
     vtable[42] = (void*)hkEndScene;
     VirtualProtect(&vtable[42], sizeof(void*), old, &old);
-
-    pDevice->Release();
-    pD3D->Release();
 
     Log("InstallHooks: done");
 }
